@@ -2,7 +2,7 @@
 # OctoBot-Commons==1.9.73
 git+ssh://git@github.com/GM-Pacific-Limited/OctoBot-Commons.git@1.9.73
 # OctoBot-Trading==2.4.161
-# git+ssh://git@github.com/GM-Pacific-Limited/OctoBot-Trading.git@2.4.161
+git+ssh://git@github.com/GM-Pacific-Limited/OctoBot-Trading.git@2.4.161
 # OctoBot-Evaluators==1.9.7
 git+ssh://git@github.com/GM-Pacific-Limited/OctoBot-Evaluators.git@1.9.7
 # OctoBot-Tentacles-Manager==2.9.16
