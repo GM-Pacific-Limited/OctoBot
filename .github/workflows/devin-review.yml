@@ -8,6 +8,7 @@ on:
 
 jobs:
   devin-review:
+    if: ${{ github.actor != 'devin-ai-integration[bot]' && !contains(github.event.pull_request.labels.*.name, 'devin-auto-fix') }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
