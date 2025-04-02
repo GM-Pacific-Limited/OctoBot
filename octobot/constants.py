@@ -71,19 +71,17 @@ COMMUNITY_EXTENSIONS_PACKAGES_IDENTIFIER = ".cloud"
 COMMUNITY_FETCH_TIMEOUT = 30
 
 # production env SHOULD ONLY BE USED THROUGH CommunityIdentifiersProvider
-OCTOBOT_COMMUNITY_LANDING_URL = os.getenv("COMMUNITY_SERVER_URL", "https://octobot.cloud")
-OCTOBOT_COMMUNITY_API_URL = os.getenv("COMMUNITY_SERVER_URL", f"{OCTOBOT_COMMUNITY_LANDING_URL}/api/community")
-OCTOBOT_COMMUNITY_URL = os.getenv("COMMUNITY_SERVER_URL", "https://app.octobot.cloud")
-OCTOBOT_COMMUNITY_RECOVER_PASSWORD_URL = OCTOBOT_COMMUNITY_URL
+OCTOBOT_COMMUNITY_URL = os.getenv("COMMUNITY_SERVER_URL", "https://www.octobot.cloud")
+OCTOBOT_COMMUNITY_API_URL = os.getenv("COMMUNITY_SERVER_URL", f"{OCTOBOT_COMMUNITY_URL}/api/community")
+OCTOBOT_COMMUNITY_RECOVER_PASSWORD_URL = f"{OCTOBOT_COMMUNITY_URL}/login"
 # default env
 COMMUNITY_BACKEND_URL = os.getenv("COMMUNITY_BACKEND_URL", "https://nwhpvrguwcihhizrnyoe.supabase.co")
 COMMUNITY_BACKEND_KEY = os.getenv("COMMUNITY_BACKEND_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im53aHB2cmd1d2NpaGhpenJueW9lIiwicm9sZSI6ImFub24iLCJpYXQiOjE2OTU2NDQxMDcsImV4cCI6MjAxMTIyMDEwN30.AILcgv0l6hl_0IUEPlWh1wiu9RIpgrkGZGERM5uXftE")
 
 # staging env SHOULD ONLY BE USED THROUGH CommunityIdentifiersProvider
-STAGING_OCTOBOT_COMMUNITY_LANDING_URL = os.getenv("COMMUNITY_SERVER_URL", "https://beta.octobot.cloud")
-STAGING_OCTOBOT_COMMUNITY_API_URL = os.getenv("COMMUNITY_SERVER_URL", f"{STAGING_OCTOBOT_COMMUNITY_LANDING_URL}/api/community")
-STAGING_OCTOBOT_COMMUNITY_URL = os.getenv("COMMUNITY_SERVER_URL", "https://app-beta.octobot.cloud/")
-STAGING_COMMUNITY_RECOVER_PASSWORD_URL = STAGING_OCTOBOT_COMMUNITY_URL
+STAGING_OCTOBOT_COMMUNITY_URL = os.getenv("COMMUNITY_SERVER_URL", "https://beta.octobot.cloud")
+STAGING_OCTOBOT_COMMUNITY_API_URL = os.getenv("COMMUNITY_SERVER_URL", f"{STAGING_OCTOBOT_COMMUNITY_URL}/api/community")
+STAGING_COMMUNITY_RECOVER_PASSWORD_URL = f"{STAGING_OCTOBOT_COMMUNITY_URL}/login"
 STAGING_COMMUNITY_BACKEND_URL = os.getenv("COMMUNITY_BACKEND_URL", "https://wmfkgvgzokyzhvxowbyg.supabase.co")
 STAGING_COMMUNITY_BACKEND_KEY = os.getenv("COMMUNITY_BACKEND_KEY", "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6IndtZmtndmd6b2t5emh2eG93YnlnIiwicm9sZSI6ImFub24iLCJpYXQiOjE2OTE0NDA1MTEsImV4cCI6MjAwNzAxNjUxMX0.YZQl7LYgvnzO_Jizs0UKfPEaqPoV2EwhjunH8gime8o")
 
@@ -111,7 +109,7 @@ IS_CLOUD_ENV = os_util.parse_boolean_environment_var("IS_CLOUD_ENV", "false")
 USE_FETCHED_BOT_CONFIG = os_util.parse_boolean_environment_var("USE_FETCHED_BOT_CONFIG", "false")
 CAN_INSTALL_TENTACLES = os_util.parse_boolean_environment_var("CAN_INSTALL_TENTACLES", str(not IS_CLOUD_ENV))
 TRACKING_ID = os.getenv("TRACKING_ID", "eoe1stwyun" if IS_DEMO else "eoe06soct7" if IS_CLOUD_ENV else "f726lk9q59")
-PH_TRACKING_ID = os.getenv("PH_TRACKING_ID", "phc_VydQbPkMXoNhgd0xJde4hUgbWGlEJ3aaLrSu5sudFdJ")
+PH_TRACKING_ID = os.getenv("PH_TRACKING_ID", "phc_QSuFy6zqOXXKT7zAYboYS4nJShfKovpB172aa8X9nXf")
 # Profiles download urls to import at startup if missing, split by ","
 TO_DOWNLOAD_PROFILES = os.getenv("TO_DOWNLOAD_PROFILES", None)
 # Profiles to force select at startup, identified by profile id, download url or name

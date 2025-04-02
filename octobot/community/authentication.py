@@ -154,7 +154,9 @@ class CommunityAuthentication(authentication.Authenticator):
     async def get_strategy_profile_data(
         self, strategy_id: str, product_slug: str = None
     ) -> commons_profiles.ProfileData:
-        return await self.supabase_client.fetch_product_config(strategy_id, product_slug=product_slug)
+        profile_data = await self.supabase_client.fetch_product_config(strategy_id, product_slug=product_slug)
+        formatters.ensure_profile_data_exchanges_internal_name_and_type(profile_data)
+        return profile_data
 
     def is_feed_connected(self):
         return self._community_feed is not None and self._community_feed.is_connected_to_remote_feed()
@@ -607,6 +609,8 @@ class CommunityAuthentication(authentication.Authenticator):
                     await self._ensure_init_community_feed()
         except authentication.AuthenticationError as err:
             self.logger.info(f"Login aborted: no authenticated session: {err}")
+            if await self.has_login_info():
+                await self.logout()
         except authentication.UnavailableError as e:
             self.logger.exception(e, True, f"Error when fetching community data, "
                                            f"please check your internet connection.")
@@ -634,7 +638,10 @@ class CommunityAuthentication(authentication.Authenticator):
 
     async def _refresh_products(self):
         self.public_data.set_products(
-            await self.supabase_client.fetch_products(self._get_compatible_strategy_categories())
+            await self.supabase_client.fetch_products(
+                self._get_compatible_strategy_categories(),
+                [self.user_account.get_user_id()] if self.user_account.has_user_data() else None
+            )
         )
 
     def _get_compatible_strategy_categories(self) -> list[str]:
@@ -803,7 +810,8 @@ class CommunityAuthentication(authentication.Authenticator):
         except authentication.FailedAuthentication as e:
             if should_warn:
                 self.logger.warning(f"Invalid authentication details, please re-authenticate. {e}")
-            await self.logout()
+            if await self.has_login_info():
+                await self.logout()
         except authentication.UnavailableError:
             raise
         except Exception as e:
@@ -850,6 +858,17 @@ class CommunityAuthentication(authentication.Authenticator):
             formatted_orders += formatters.format_orders(orders, exchange_name)
         await self.supabase_client.update_bot_orders(self.user_account.bot_id, formatted_orders)
         self.logger.info(f"Bot orders updated: using {len(formatted_orders)} orders")
+
+    @_bot_data_update
+    async def update_positions(self, positions_by_exchange: dict[str, list]):
+        """
+        Updates authenticated account positions
+        """
+        formatted_positions = []
+        for exchange_name, positions in positions_by_exchange.items():
+            formatted_positions += formatters.format_positions(positions, exchange_name)
+        await self.supabase_client.update_bot_positions(self.user_account.bot_id, formatted_positions)
+        self.logger.info(f"Bot positions updated: using {len(formatted_positions)} positions")
 
     @_bot_data_update
     async def update_portfolio(self, current_value: dict, initial_value: dict, profitability: float,

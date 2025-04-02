@@ -6,6 +6,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 *It is strongly advised to perform an update of your tentacles after updating OctoBot. (start.py tentacles --install --all)*
 
+
+## [2.0.9] - 2025-03-06
+### Added
+- [Community] Support OctoBot AI created strategies
+- [EMAMomentumEvaluator] Add "reverse_signal" param to configuration
+- [Exchanges] Handle IP whitelist error
+- [Exchanges] Handle socks proxies
+### Updated
+- [Trades] Logs more info on loaded historical trades
+- [Orders] Improved invalid order amount error
+- [Coinbase] Ignore untradable aliased trading pairs (such as BTC/USD) 
+- [TradingModes] Don't interrupt execution when failing to cancel orders
+- [TradingModes] Improve chained orders fees handling: only count initial order fees in the last created chained order 
+- [GridTrading] Add warning when trailing is skipped because of target orders configuration
+### Fixed
+- [Community] Fixed register to www.octobot.cloud from OctoBot
+- [Exchanges] Fix authentication issues when using read-only exchanges
+- [Orders] Fix stop orders sync issues
+- [Backtesting] Fix timeout issue when initializing prices
+- [TradingModes] Fix missing price issues on DCA and Grid inits
+- [IndexTrading] Fix backtesting when no historical config is provided
+- [GPTEvaluator] Display model selector even when only 1 model is available
+- [CoinEx] Fix partially filled orders parsing
+- [Binance.us] Fixed fees computation
+- [Configuration] Allow single character cryptos (such as "S")
+
+## [2.0.8] - 2025-01-27
+### Added
+- [Profiles] Trailing grid default profile
+- [GridTrading] Trading up and down options
+- [TradingView] Support LEVERAGE parameter to update position leverage value
+- [TradingView] Send REDUCE_ONLY param to exchange orders
+- [Exchanges] Support exchange-side spot market stop losses for Binance, Coinbase, Kucoin and BingX
+- [Exchanges] Add http, https and ws proxy support
+- [Exchanges] Add http requests counter
+- [Exchanges] Add request counter 
+- [Exchanges] Add custom exchange domain support
+- [WebInterface] Add no enabled exchange hint on configuration issue
+### Updated
+- [GPTService] Improve custom LLM docs
+- [GPTService] Support empty token when calling custom LLMs
+- [Orders] Make chained orders more reliable 
+- [Exchanges] Reduce log size for html content errors 
+### Fixed
+- [FuturesTrading] Fix position sync issues
+- [TradingModes] Fix rare sell orders creation issues
+- [GridTrading & StaggeredOrders] Fix many live & backtesting quantity and price related issues
+- [DCATradingMode] Fix a rare init issue
+- [MarketPrice] Fix mark price issue
+- [Backtesting] Fix futures trading backtesting issues
+- [MEXC] Many fixes
+- [BingX] Order fixes
+- [Exchanges] Fix rare incorrect stop orders parsing
+- [Exchanges] Fix rare cancel order errors
+- [Exchanges] Fix rare exchange request spamming issues on looping errors 
+- [Community] Fix expired session error
+- [Community] Fix /community page error
+- [Community] Fix SSL-related issues
+
 ## [2.0.7] - 2024-10-26
 ### Added
 - [TradingView] Support multiple take profits

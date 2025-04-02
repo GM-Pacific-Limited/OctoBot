@@ -27,6 +27,7 @@ import gotrue.errors
 import gotrue.types
 import postgrest
 import postgrest.types
+import postgrest.utils
 import supabase
 
 import octobot_commons.authentication as authentication
@@ -35,15 +36,17 @@ import octobot_commons.profiles as commons_profiles
 import octobot_commons.profiles.profile_data as commons_profile_data
 import octobot_commons.enums as commons_enums
 import octobot_commons.constants as commons_constants
+import octobot_commons.dict_util as dict_util
 import octobot_trading.api as trading_api
 import octobot.constants as constants
 import octobot.community.errors as errors
 import octobot.community.models.formatters as formatters
 import octobot.community.models.community_user_account as community_user_account
+import octobot.community.models.strategy_data as strategy_data
 import octobot.community.supabase_backend.enums as enums
 import octobot.community.supabase_backend.supabase_client as supabase_client
 import octobot.community.supabase_backend.configuration_storage as configuration_storage
-
+import octobot.community.identifiers_provider as identifiers_provider
 
 # Experimental to prevent httpx.PoolTimeout
 _INTERNAL_LOGGERS = [
@@ -60,7 +63,7 @@ def error_describer():
     try:
         yield
     except postgrest.APIError as err:
-        if "jwt expired" in str(err).lower():
+        if _is_jwt_expired_error(err):
             raise errors.SessionTokenExpiredError(err) from err
         raise
 
@@ -108,6 +111,7 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
                 "email": email,
                 "password": password,
                 "options": {
+                    "redirect_to": f"{identifiers_provider.IdentifiersProvider.COMMUNITY_URL}/login",
                     "data": {
                         "hasRegisteredFromSelfHosted": True,
                         community_user_account.CommunityUserAccount.HOSTING_ENABLED: True,
@@ -122,7 +126,7 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
     async def sign_out(self, options: gotrue.types.SignOutOptions) -> None:
         try:
             await self.auth.sign_out(options)
-        except gotrue.errors.AuthApiError:
+        except (postgrest.exceptions.APIError, gotrue.errors.AuthApiError):
             pass
 
     def _requires_email_validation(self, user: gotrue.types.User) -> bool:
@@ -137,7 +141,7 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
     async def refresh_session(self, refresh_token: typing.Union[str, None] = None):
         try:
             await self.auth.refresh_session(refresh_token=refresh_token)
-        except gotrue.errors.AuthError as err:
+        except (postgrest.exceptions.APIError, gotrue.errors.AuthError) as err:
             raise authentication.AuthenticationError(f"Community auth error: {err}") from err
 
     async def sign_in_with_otp_token(self, token):
@@ -229,16 +233,21 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
         return json.loads(json.loads(resp)["message"])
 
     async def fetch_bot(self, bot_id) -> dict:
-        try:
-            # https://postgrest.org/en/stable/references/api/resource_embedding.html#hint-disambiguation
-            return (await self.table("bots").select("*,bot_deployment:bot_deployments!bots_current_deployment_id_fkey(*)").eq(
-                enums.BotKeys.ID.value, bot_id
-            ).execute()).data[0]
-        except IndexError:
-            raise errors.BotNotFoundError(f"Can't find bot with id: {bot_id}")
+        with jwt_expired_auth_raiser():
+            try:
+                # https://postgrest.org/en/stable/references/api/resource_embedding.html#hint-disambiguation
+                return (await self.table("bots").select("*,bot_deployment:bot_deployments!bots_current_deployment_id_fkey(*)").eq(
+                    enums.BotKeys.ID.value, bot_id
+                ).execute()).data[0]
+            except IndexError:
+                raise errors.BotNotFoundError(f"Can't find bot with id: {bot_id}")
 
     async def fetch_bots(self) -> list:
-        return (await self.table("bots").select("*,bot_deployment:bot_deployments!bots_current_deployment_id_fkey!inner(*)").execute()).data
+        with jwt_expired_auth_raiser():
+            return (
+                await self.table("bots").select(
+                    "*,bot_deployment:bot_deployments!bots_current_deployment_id_fkey!inner(*)"
+                ).execute()).data
 
     async def create_bot(self, deployment_type: enums.DeploymentTypes) -> dict:
         created_bot = (await self.table("bots").insert({
@@ -304,20 +313,46 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
         resp = await self.rpc("get_startup_info", {"bot_id": bot_id}).execute()
         return resp.data[0]
 
-    async def fetch_products(self, category_types: list[str]) -> list:
-        return (
-            await self.table("products").select(
+    async def fetch_products(self, category_types: list[str], author_ids: typing.Optional[list[str]]) -> list:
+        try:
+            sanitized_authors = ",".join(map(
+                postgrest.utils.sanitize_param,
+                [author_id for author_id in author_ids if author_id]
+            )) if author_ids else None
+            query = self.table("products").select(
                 "*,"
                 "category:product_categories!inner(slug, name_translations, type, metadata),"
                 "results:product_results!products_current_result_id_fkey("
                 "  profitability,"
                 "  reference_market_profitability"
                 ")"
-            ).eq(
-                enums.ProductKeys.VISIBILITY.value, "public"
-            ).in_("category.type", category_types)
-            .execute()
-        ).data
+            ).in_(
+                "category.type", category_types
+            )
+            if sanitized_authors:
+                query = query.or_(
+                    # https://supabase.com/docs/reference/python/or
+                    # either a public product with NULL author id
+                    f"and({enums.ProductKeys.VISIBILITY.value}.{postgrest.types.Filters.EQ}.public"
+                    f", {enums.ProductKeys.AUTHOR_ID.value}.{postgrest.types.Filters.IS}.NULL), "
+                    # or a product whose author is in sanitized_authors
+                    f"{enums.ProductKeys.AUTHOR_ID.value}.{postgrest.types.Filters.IN}.({sanitized_authors})"
+                ).not_.eq(
+                    # skip deleted strategies
+                    enums.ProductKeys.VISIBILITY.value, "deleted"
+                )
+            else:
+                query = query.eq(
+                    enums.ProductKeys.VISIBILITY.value, "public"
+                ).is_(
+                    enums.ProductKeys.AUTHOR_ID.value, "NULL"
+                )
+            return (
+                await query.execute()
+            ).data
+        except postgrest.exceptions.APIError as err:
+            commons_logging.get_logger(__name__).error(f"Error when fetching products: {err}")
+            return []
 
     async def fetch_subscribed_products_urls(self) -> list:
         resp = await self.rpc("get_subscribed_products_urls").execute()
@@ -349,6 +384,14 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
     async def update_bot_orders(self, bot_id, formatted_orders) -> dict:
         bot_update = {
             enums.BotKeys.ORDERS.value: formatted_orders
+        }
+        return await self.update_bot(
+            bot_id, bot_update
+        )
+
+    async def update_bot_positions(self, bot_id, formatted_positions) -> dict:
+        bot_update = {
+            enums.BotKeys.POSITIONS.value: formatted_positions
         }
         return await self.update_bot(
             bot_id, bot_update
@@ -386,24 +429,48 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
         )
         auth_data = []
         # apply specific options
-        await self._apply_options_based_config(
+        await self._apply_options_based_authenticated_tentacles_config(
             profile_data, auth_data, bot_config["bot_config"], authenticator, auth_key
         )
         return profile_data, auth_data
 
-
-    async def _apply_options_based_config(
+    async def _apply_options_based_authenticated_tentacles_config(
         self, profile_data: commons_profiles.ProfileData,
         auth_data: list[commons_profiles.ExchangeAuthData], bot_config: dict,
         authenticator, auth_key: typing.Optional[str]
     ):
-        if tentacles_data := [
-            commons_profile_data.TentaclesData.from_dict(td)
-            for td in bot_config[enums.BotConfigKeys.OPTIONS.value].get("tentacles", [])
-        ]:
+        # updates tentacles config using authenticated requests
+        if tentacles_data := self.get_tentacles_data_options(bot_config):
             await commons_profiles.TentaclesProfileDataTranslator(profile_data, auth_data).translate(
                 tentacles_data, bot_config, authenticator, auth_key
             )
+
+    def _apply_options_based_tentacles_config(self, profile_data: commons_profiles.ProfileData, bot_config: dict):
+        # updates tentacles config only from options, makes no request
+        tentacle_data_overrides = self.get_tentacles_data_options(bot_config)
+        if not tentacle_data_overrides:
+            return
+        tentacle_config_by_tentacle = {
+            tentacle_config.name: tentacle_config.config
+            for tentacle_config in profile_data.tentacles
+        }
+        for tentacle_data_override in tentacle_data_overrides:
+            if tentacle_data_override.name in tentacle_config_by_tentacle:
+                # tentacle data exists: patch values
+                tentacle_config_by_tentacle[tentacle_data_override.name] = dict_util.nested_update_dict(
+                    tentacle_config_by_tentacle[tentacle_data_override.name],
+                    tentacle_data_override.config,
+                    ignore_lists=True
+                )
+            else:
+                # tentacle data doesn't exist: add it
+                profile_data.tentacles.append(tentacle_data_override)
+
+    def get_tentacles_data_options(self, bot_config: dict) -> list[commons_profile_data.TentaclesData]:
+        return [
+            commons_profile_data.TentaclesData.from_dict(td)
+            for td in bot_config[enums.BotConfigKeys.OPTIONS.value].get(enums.BotConfigOptionsKeys.TENTACLES.value, [])
+        ]
 
     async def fetch_bot_profile_data(self, bot_config_id: str) -> commons_profiles.ProfileData:
         if not bot_config_id:
@@ -419,9 +486,13 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
             "   product:products!product_id(slug, attributes)"
             ")"
         ).eq(enums.BotConfigKeys.ID.value, bot_config_id).execute()).data[0]
-        profile_data = commons_profiles.ProfileData.from_dict(
-            bot_config["product_config"][enums.ProfileConfigKeys.CONFIG.value]
-        )
+        try:
+            profile_config = bot_config["product_config"][enums.ProfileConfigKeys.CONFIG.value]
+            if not profile_config:
+                raise TypeError(f"product_config.config is '{profile_config}'")
+            profile_data = commons_profiles.ProfileData.from_dict(profile_config)
+        except (TypeError, KeyError) as err:
+            raise errors.InvalidBotConfigError(f"Missing bot product config: {err} ({err.__class__.__name__})") from err
         profile_data.profile_details.name = bot_config["product_config"].get("product", {}).get(
             "slug", profile_data.profile_details.name
         )
@@ -451,6 +522,7 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
         profile_data.exchanges = await self._fetch_full_exchange_configs(bot_config, profile_data)
         if options := bot_config.get(enums.BotConfigKeys.OPTIONS.value):
             profile_data.options = commons_profiles.OptionsData.from_dict(options)
+            self._apply_options_based_tentacles_config(profile_data, bot_config)
         return profile_data
 
     async def _fetch_full_exchange_configs(
@@ -465,7 +537,10 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
             for config in (bot_config.get(enums.BotConfigKeys.EXCHANGES.value) or [])
             if (
                 config.get(enums.ExchangeKeys.EXCHANGE_ID.value, None)
-                and not config.get(enums.ExchangeKeys.INTERNAL_NAME.value, None)
+                and not (
+                    config.get(enums.ExchangeKeys.INTERNAL_NAME.value, None)
+                    and config.get(enums.ExchangeKeys.AVAILABILITY.value, None)
+                )
             )
         }
         if incomplete_exchange_config_by_id:
@@ -475,6 +550,7 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
                     **incomplete_exchange_config_by_id[exchange[enums.ExchangeKeys.ID.value]],
                     **{
                         enums.ExchangeKeys.INTERNAL_NAME.value: exchange[enums.ExchangeKeys.INTERNAL_NAME.value],
+                        enums.ExchangeKeys.AVAILABILITY.value: exchange[enums.ExchangeKeys.AVAILABILITY.value],
                     }
                 }
                 for exchange in fetched_exchanges
@@ -498,6 +574,7 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
                     **{
                         enums.ExchangeKeys.EXCHANGE_ID.value: exchange[enums.ExchangeKeys.ID.value],
                         enums.ExchangeKeys.INTERNAL_NAME.value: exchange[enums.ExchangeKeys.INTERNAL_NAME.value],
+                        enums.ExchangeKeys.AVAILABILITY.value: exchange[enums.ExchangeKeys.AVAILABILITY.value],
                     }
                 }
                 for credentials_id, exchange in exchanges_by_credential_ids.items()
@@ -517,22 +594,47 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
                     {
                         enums.ExchangeKeys.EXCHANGE_ID.value: exchange[enums.ExchangeKeys.ID.value],
                         enums.ExchangeKeys.INTERNAL_NAME.value: exchange[enums.ExchangeKeys.INTERNAL_NAME.value],
+                        enums.ExchangeKeys.AVAILABILITY.value: exchange[enums.ExchangeKeys.AVAILABILITY.value],
                     }
                     for exchange in fetched_exchanges
+                    # no way to differentiate futures and spot exchanges using internal_names only:
+                    # use spot exchange here by default
+                    if (
+                        formatters.get_exchange_type_from_availability(
+                            exchange.get(enums.ExchangeKeys.AVAILABILITY.value)
+                        )
+                        == commons_constants.CONFIG_EXCHANGE_SPOT
+                    )
                 ]
             else:
                 commons_logging.get_logger(self.__class__.__name__).error(
                     f"Impossible to fetch exchange details for profile with bot id: {profile_data.profile_details.id}"
                 )
+        # Register exchange_type from exchange availability
+        exchange_type = commons_constants.CONFIG_EXCHANGE_SPOT
+        if exchanges_configs:
+            # Multi exchange type configurations are not yet supported
+            exchange_type = formatters.get_exchange_type_from_availability(
+                exchanges_configs[0].get(
+                    enums.ExchangeKeys.AVAILABILITY.value
+                )
+            )
+        for exchange_data in exchanges_configs:
+            exchange_data[enums.ExchangeKeys.EXCHANGE_TYPE.value] = exchange_type
+            exchange_data[enums.ExchangeKeys.INTERNAL_NAME.value] = formatters.to_bot_exchange_internal_name(
+                exchange_data[enums.ExchangeKeys.INTERNAL_NAME.value]
+            )
         return [
             commons_profiles.ExchangeData.from_dict(exchange_data)
             for exchange_data in exchanges_configs
         ]
 
     async def fetch_exchanges(self, exchange_ids: list, internal_names: typing.Optional[list] = None) -> list:
+        # WARNING: setting internal_names can result in duplicate (futures and spot) exchanges
         select = self.table("exchanges").select(
             f"{enums.ExchangeKeys.ID.value}, "
-            f"{enums.ExchangeKeys.INTERNAL_NAME.value}"
+            f"{enums.ExchangeKeys.INTERNAL_NAME.value}, "
+            f"{enums.ExchangeKeys.AVAILABILITY.value}"
         )
         if internal_names:
             return (await select.in_(enums.ExchangeKeys.INTERNAL_NAME.value, internal_names).execute()).data
@@ -541,7 +643,7 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
     async def fetch_exchanges_by_credential_ids(self, exchange_credential_ids: list) -> dict:
         exchanges = (await self.table("exchange_credentials").select(
             "id,"
-            "exchange:exchanges(id, internal_name)"
+            f"exchange:exchanges(id, {enums.ExchangeKeys.INTERNAL_NAME.value}, {enums.ExchangeKeys.AVAILABILITY.value})"
         ).in_("id", exchange_credential_ids).execute()).data
         return {
             exchange["id"]: exchange["exchange"]
@@ -554,7 +656,8 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
         try:
             query = self.table("products").select(
                 "slug, "
-                "product_config:product_configs!current_config_id(config, version)"
+                "product_config:product_configs!current_config_id(config, version), "
+                "category:product_categories!inner(slug)"
             )
             query = query.eq(enums.ProductKeys.SLUG.value, product_slug) if product_slug \
                 else query.eq(enums.ProductKeys.ID.value, product_id)
@@ -564,7 +667,10 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
         profile_data = commons_profiles.ProfileData.from_dict(
             product["product_config"][enums.ProfileConfigKeys.CONFIG.value]
         )
-        profile_data.profile_details.name = product["slug"]
+        name = product["slug"]
+        if strategy_data.is_custom_category(product["category"]):
+            name = strategy_data.get_custom_strategy_name(name)
+        profile_data.profile_details.name = name
         profile_data.profile_details.version = product["product_config"][enums.ProfileConfigKeys.VERSION.value]
         return profile_data
 
@@ -710,19 +816,25 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
         self, client, table_name: str, select: str, matcher: dict,
         first_open_time: float, last_open_time: float
     ) -> list:
-        def request_factory(table: postgrest.AsyncRequestBuilder, select_count):
-            return (
-                table.select(select, count=select_count)
-                .match(matcher).gte(
+        def request_factory(table: postgrest.AsyncRequestBuilder, select_count, last_fetched_row):
+            request = table.select(select, count=select_count)
+            if last_fetched_row is None:
+                request = request.match(matcher).gte(
                     "timestamp", self.get_formatted_time(first_open_time)
-                ).lte(
+                )
+            else:
+                request = request.match(matcher).gt(
+                    "timestamp", last_fetched_row["timestamp"]
+                )
+            return (
+                request.lte(
                     "timestamp", self.get_formatted_time(last_open_time)
                 ).order(
                     "timestamp", desc=False
                 )
             )
 
-        return await self.paginated_fetch(
+        return await self.cursor_paginated_fetch(
             client, table_name, request_factory
         )
 
@@ -760,6 +872,47 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
             offset += len(fetched_elements)
             if max_size_per_fetch == 0:
                 max_size_per_fetch = offset
+            request_count += 1
+
+        if request_count == self.MAX_PAGINATED_REQUESTS_COUNT:
+            commons_logging.get_logger(self.__class__.__name__).info(
+                f"Paginated fetch error on {table_name} with request_factory: {request_factory.__name__}: "
+                f"too many requests ({request_count}), fetched: {len(total_elements)} elements"
+            )
+        return total_elements
+
+    async def cursor_paginated_fetch(
+        self,
+        client,
+        table_name: str,
+        request_factory: typing.Callable[
+            [postgrest.AsyncRequestBuilder, postgrest.types.CountMethod, typing.Optional[dict]],
+            postgrest.AsyncSelectRequestBuilder
+        ],
+    ) -> list:
+        max_size_per_fetch = 0
+        total_elements = []
+        request_count = 0
+        total_elements_count = 0
+        while request_count < self.MAX_PAGINATED_REQUESTS_COUNT:
+            request = request_factory(
+                client.table(table_name),
+                None if total_elements_count else postgrest.types.CountMethod.exact,
+                total_elements[-1] if total_elements else None
+            )
+            result = await request.execute()
+            fetched_elements = result.data
+            total_elements_count = total_elements_count or result.count   # don't change total count within iteration
+            total_elements += fetched_elements
+            if(
+                len(fetched_elements) == 0 or   # nothing to fetch
+                len(fetched_elements) < max_size_per_fetch or   # fetched the last elements
+                len(fetched_elements) == total_elements_count   # finished fetching
+            ):
+                # fetched everything
+                break
+            if max_size_per_fetch == 0:
+                max_size_per_fetch = len(fetched_elements)
             request_count += 1
 
         if request_count == self.MAX_PAGINATED_REQUESTS_COUNT:
@@ -821,7 +974,7 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
         Not implemented for authenticated users
         """
         result = await self.storage.from_(bucket_name).upload(asset_name, content)
-        return result.json()["Id"]
+        return result.path
 
     async def list_assets(self, bucket_name: str) -> list[dict[str, str]]:
         """
@@ -829,11 +982,11 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
         """
         return await self.storage.from_(bucket_name).list()
 
-    async def remove_asset(self, bucket_name: str, asset_name: str) -> None:
+    async def remove_asset(self, bucket_name: str, asset_path: str) -> None:
         """
         Not implemented for authenticated users
         """
-        await self.storage.from_(bucket_name).remove(asset_name)
+        await self.storage.from_(bucket_name).remove([asset_path])
 
     async def send_signal(self, table, product_id: str, signal: str):
         return (await self.table(table).insert({
@@ -894,3 +1047,17 @@ class CommunitySupabaseClient(supabase_client.AuthenticatedAsyncSupabaseClient):
                 # happens when the event loop is closed already
                 pass
             self.production_anon_client = None
+
+
+def _is_jwt_expired_error(err: Exception) -> bool:
+    return "jwt expired" in str(err).lower()
+
+
+@contextlib.contextmanager
+def jwt_expired_auth_raiser():
+    try:
+        yield
+    except postgrest.exceptions.APIError as err:
+        if _is_jwt_expired_error(err):
+            raise authentication.AuthenticationError(f"Please re-login to your OctoBot account: {err}") from err
+        raise

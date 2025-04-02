@@ -15,12 +15,12 @@
 #  License along with OctoBot. If not, see <https://www.gnu.org/licenses/>.
 import contextlib
 import decimal
-import ccxt
 import pytest
 
 import octobot_trading.enums as trading_enums
 import octobot_trading.constants as trading_constants
 import octobot_trading.errors as trading_errors
+import trading_backend.enums
 from additional_tests.exchanges_tests import abstract_authenticated_exchange_tester
 
 
@@ -33,7 +33,6 @@ class AbstractAuthenticatedFutureExchangeTester(
     INVERSE_SYMBOL = None
     MIN_PORTFOLIO_SIZE = 2  # ensure fetching currency for linear and inverse
     SUPPORTS_GET_LEVERAGE = True
-    SUPPORTS_SET_LEVERAGE = True
     SUPPORTS_EMPTY_POSITION_SET_MARGIN_TYPE = True
 
     async def test_get_empty_linear_and_inverse_positions(self):
@@ -42,10 +41,25 @@ class AbstractAuthenticatedFutureExchangeTester(
             await self.inner_test_get_empty_linear_and_inverse_positions()
 
     async def inner_test_get_empty_linear_and_inverse_positions(self):
+        if self.exchange_manager.exchange.SUPPORTS_SET_MARGIN_TYPE:
+            await self.set_margin_type(trading_enums.MarginType.ISOLATED)
+            await self._inner_test_get_empty_linear_and_inverse_positions_for_margin_type(
+                trading_enums.MarginType.ISOLATED
+            )
+            await self.set_margin_type(trading_enums.MarginType.CROSS)
+            await self._inner_test_get_empty_linear_and_inverse_positions_for_margin_type(
+                trading_enums.MarginType.CROSS
+            )
+        else:
+            await self._inner_test_get_empty_linear_and_inverse_positions_for_margin_type(None)
+
+    async def _inner_test_get_empty_linear_and_inverse_positions_for_margin_type(
+        self, margin_type: trading_enums.MarginType
+    ):
         positions = await self.get_positions()
         self._check_positions_content(positions)
         position = await self.get_position(self.SYMBOL)
-        self._check_position_content(position, self.SYMBOL)
+        self._check_position_content(position, self.SYMBOL, margin_type=margin_type)
         for contract_type in (trading_enums.FutureContractType.LINEAR_PERPETUAL,
                               trading_enums.FutureContractType.INVERSE_PERPETUAL):
             if not self.has_empty_position(self.get_filtered_positions(positions, contract_type)):
@@ -70,9 +84,12 @@ class AbstractAuthenticatedFutureExchangeTester(
         assert origin_leverage != trading_constants.ZERO
         if self.SUPPORTS_GET_LEVERAGE:
             assert origin_leverage == await self.get_leverage()
-        if not self.SUPPORTS_SET_LEVERAGE:
-            return
         new_leverage = origin_leverage + 1
+        if not self.exchange_manager.exchange.UPDATE_LEVERAGE_FROM_API:
+            # can't set from api: make sure of that
+            with pytest.raises(trading_errors.NotSupported):
+                await self.exchange_manager.exchange.connector.set_symbol_leverage(self.SYMBOL, float(new_leverage))
+            return
         await self.set_leverage(new_leverage)
         await self._check_margin_type_and_leverage(origin_margin_type, new_leverage)    # did not change margin type
         # change leverage back to origin value
@@ -134,11 +151,13 @@ class AbstractAuthenticatedFutureExchangeTester(
         for position in positions:
             self._check_position_content(position, None)
 
-    def _check_position_content(self, position, symbol, position_mode=None):
+    def _check_position_content(self, position, symbol, position_mode=None, margin_type=None):
         if symbol:
             assert position[trading_enums.ExchangeConstantsPositionColumns.SYMBOL.value] == symbol
         else:
             assert position[trading_enums.ExchangeConstantsPositionColumns.SYMBOL.value]
+        if margin_type:
+            assert position[trading_enums.ExchangeConstantsPositionColumns.MARGIN_TYPE.value] == margin_type
         leverage = position[trading_enums.ExchangeConstantsPositionColumns.LEVERAGE.value]
         assert isinstance(leverage, decimal.Decimal)
         # should not be 0 in octobot
@@ -149,12 +168,33 @@ class AbstractAuthenticatedFutureExchangeTester(
             assert position[trading_enums.ExchangeConstantsPositionColumns.POSITION_MODE.value] is position_mode
 
     async def inner_test_create_and_cancel_limit_orders(self, symbol=None, settlement_currency=None):
+        if self.exchange_manager.exchange.SUPPORTS_SET_MARGIN_TYPE:
+            await self.set_margin_type(trading_enums.MarginType.ISOLATED)
+            await self._inner_test_create_and_cancel_limit_orders_for_margin_type(
+                symbol=symbol, settlement_currency=settlement_currency, margin_type=trading_enums.MarginType.ISOLATED
+            )
+            await self.set_margin_type(trading_enums.MarginType.CROSS)
+            await self._inner_test_create_and_cancel_limit_orders_for_margin_type(
+                symbol=symbol, settlement_currency=settlement_currency, margin_type=trading_enums.MarginType.CROSS
+            )
+        else:
+            await self._inner_test_create_and_cancel_limit_orders_for_margin_type(
+                symbol=symbol, settlement_currency=settlement_currency, margin_type=None
+            )
+
+    async def _inner_test_create_and_cancel_limit_orders_for_margin_type(
+            self, symbol=None, settlement_currency=None, margin_type=None
+    ):
         # test with linear symbol
-        await super().inner_test_create_and_cancel_limit_orders()
+        await super().inner_test_create_and_cancel_limit_orders(margin_type=margin_type)
         # test with inverse symbol
         await super().inner_test_create_and_cancel_limit_orders(
-            symbol=self.INVERSE_SYMBOL, settlement_currency=self.ORDER_CURRENCY
+            symbol=self.INVERSE_SYMBOL, settlement_currency=self.ORDER_CURRENCY, margin_type=margin_type
         )
+
+    def _ensure_required_permissions(self, permissions):
+        super()._ensure_required_permissions(permissions)
+        assert trading_backend.enums.APIKeyRights.FUTURES_TRADING in permissions
 
     async def inner_test_create_and_fill_market_orders(self):
         portfolio = await self.get_portfolio()

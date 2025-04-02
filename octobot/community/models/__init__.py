@@ -46,12 +46,20 @@ from octobot.community.models.formatters import (
     format_portfolio,
     format_portfolio_history,
     format_portfolio_with_profitability,
+    get_exchange_type_from_availability,
+    to_bot_exchange_internal_name,
+    ensure_profile_data_exchanges_internal_name_and_type,
+    get_exchange_type_from_internal_name,
+    to_community_exchange_internal_name,
 )
 from octobot.community.models.community_public_data import (
     CommunityPublicData
 )
 from octobot.community.models.strategy_data import (
-    StrategyData
+    StrategyData,
+    is_custom_category,
+    get_custom_strategy_name,
+    is_custom_strategy_profile,
 )
 
 __all__ = [
@@ -66,6 +74,14 @@ __all__ = [
     "format_portfolio",
     "format_portfolio_history",
     "format_portfolio_with_profitability",
+    "get_exchange_type_from_availability",
+    "to_bot_exchange_internal_name",
+    "ensure_profile_data_exchanges_internal_name_and_type",
+    "get_exchange_type_from_internal_name",
+    "to_community_exchange_internal_name",
     "CommunityPublicData",
     "StrategyData",
+    "is_custom_category",
+    "get_custom_strategy_name",
+    "is_custom_strategy_profile",
 ]

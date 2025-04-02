@@ -34,6 +34,7 @@ class TestOKXAuthenticatedExchange(
     VALID_ORDER_ID = "698652818181726221"
     CHECK_EMPTY_ACCOUNT = True  # set True when the account to check has no funds. Warning: does not check order
     # parse/create/fill/cancel or portfolio & trades parsing
+    IS_AUTHENTICATED_REQUEST_CHECK_AVAILABLE = True    # set True when is_authenticated_request is implemented
 
     async def test_get_portfolio(self):
         await super().test_get_portfolio()
@@ -41,11 +42,23 @@ class TestOKXAuthenticatedExchange(
     async def test_get_portfolio_with_market_filter(self):
         await super().test_get_portfolio_with_market_filter()
 
+    async def test_is_valid_account(self):
+        await super().test_is_valid_account()
+
+    async def test_get_special_orders(self):
+        await super().test_get_special_orders()
+
     async def test_create_and_cancel_limit_orders(self):
         await super().test_create_and_cancel_limit_orders()
 
     async def test_get_account_id(self):
         await super().test_get_account_id()
+
+    async def test_untradable_symbols(self):
+        await super().test_untradable_symbols()
+
+    async def test_is_authenticated_request(self):
+        await super().test_is_authenticated_request()
 
     async def test_invalid_api_key_error(self):
         await super().test_invalid_api_key_error()
@@ -55,6 +68,9 @@ class TestOKXAuthenticatedExchange(
 
     async def test_missing_trading_api_key_permissions(self):
         pass
+
+    async def test_api_key_ip_whitelist_error(self):
+        await super().test_api_key_ip_whitelist_error()
 
     async def test_get_not_found_order(self):
         await super().test_get_not_found_order()

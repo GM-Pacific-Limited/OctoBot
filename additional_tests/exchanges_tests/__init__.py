@@ -17,6 +17,8 @@ import contextlib
 import os
 import dotenv
 import mock
+import time
+import asyncio
 
 import trading_backend
 import octobot_commons.constants as commons_constants
@@ -65,7 +67,7 @@ class ExchangeChannelMock:
 async def get_authenticated_exchange_manager(
     exchange_name, exchange_tentacle_name, config=None,
     credentials_exchange_name=None, market_filter=None,
-    use_invalid_creds=False
+    use_invalid_creds=False, http_proxy_callback_factory=None
 ):
     credentials_exchange_name = credentials_exchange_name or exchange_name
     _load_exchange_creds_env_variables_if_necessary()
@@ -89,6 +91,9 @@ async def get_authenticated_exchange_manager(
         .enable_storage(False) \
         .disable_trading_mode() \
         .is_exchange_only()
+    if http_proxy_callback_factory:
+        proxy_callback = http_proxy_callback_factory(exchange_builder.exchange_manager)
+        exchange_builder.set_proxy_config(exchanges.ProxyConfig(http_proxy_callback=proxy_callback))
     exchange_manager_instance = await exchange_builder.build()
     # create trader afterwards to init exchange personal data
     exchange_manager_instance.trader.is_enabled = True
@@ -98,6 +103,7 @@ async def get_authenticated_exchange_manager(
     )
     exchange_manager_instance.exchange.__class__.PRINT_DEBUG_LOGS = True
     set_mocked_required_channels(exchange_manager_instance)
+    t0 = time.time()
     try:
         yield exchange_manager_instance
     except errors.UnreachableExchange as err:
@@ -105,6 +111,9 @@ async def get_authenticated_exchange_manager(
                                          "to the internet (or a proxy is preventing connecting to this exchange).") \
             from err
     finally:
+        if time.time() - t0 < 1:
+            # Stopping the exchange manager too quickly can end in infinite loop, ensuring at least 1s passed
+            await asyncio.sleep(1)
         await exchange_manager_instance.stop()
         trading_api.cancel_ccxt_throttle_task()
         # let updaters gracefully shutdown
@@ -156,9 +165,11 @@ def _invalidate(exchange_config: dict):
     updated_decoded = decoded
     for numb in range(9):
         if str(numb) in decoded:
-            number_index = decoded.index(str(numb))
-            updated_decoded = f"{decoded[:number_index]}{numb + 1}{decoded[number_index+1:]}"
-            break
+            # replace from the end first: coinbase-like api keys have a prefix that can be changed and remain valid
+            number_rindex = decoded.rindex(str(numb))
+            if number_rindex != len(decoded) - 1:
+                updated_decoded = f"{decoded[:number_rindex]}{numb + 1}{decoded[number_rindex+1:]}"
+                break
     if updated_decoded == decoded:
         raise ValueError("No number to invalid api key")
     exchange_config[commons_constants.CONFIG_EXCHANGE_KEY] = configuration.encrypt(updated_decoded).decode()
